@@ -1,5 +1,6 @@
 package com.ashwake.core.command;
 
+import com.ashwake.core.dev.DevModeState;
 import com.ashwake.core.world.SpawnStructureSavedData;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.context.CommandContext;
@@ -17,13 +18,9 @@ public final class AshwakeLocateCommand {
     }
 
     public static void onRegisterCommands(RegisterCommandsEvent event) {
-        if (isProductionEnvironment()) {
-            return;
-        }
-
         event.getDispatcher().register(
                 Commands.literal("ashwake")
-                        .requires(AshwakeLocateCommand::canUseDevCommands)
+                        .requires(DevModeState::canUseDevPowers)
                         .then(Commands.literal("structure")
                                 .then(Commands.literal("spawn")
                                         .then(Commands.literal("locate")
@@ -33,14 +30,6 @@ public final class AshwakeLocateCommand {
                                         .then(Commands.literal("tp")
                                                 .executes(AshwakeLocateCommand::teleportToSpawnStructure))))
         );
-    }
-
-    private static boolean isProductionEnvironment() {
-        return AshwakeLocateCommand.class.getClassLoader().getResource("net/minecraft/DetectedVersion.class") == null;
-    }
-
-    private static boolean canUseDevCommands(CommandSourceStack source) {
-        return !isProductionEnvironment() && source.hasPermission(2);
     }
 
     private static int locateSpawnStructure(CommandContext<CommandSourceStack> context) {

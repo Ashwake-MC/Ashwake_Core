@@ -1,9 +1,15 @@
 package com.ashwake.core;
 
 import com.ashwake.core.command.AshwakeLocateCommand;
+import com.ashwake.core.command.DevModeCommand;
+import com.ashwake.core.dev.DevModeState;
+import com.ashwake.core.network.SkillNetworking;
+import com.ashwake.core.skills.SkillEvents;
+import com.ashwake.core.skills.TreeFellingHandler;
 import com.mojang.logging.LogUtils;
 import com.ashwake.core.world.SpawnStructureHandler;
 import com.ashwake.core.world.SpawnStructureProtectionHandler;
+import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
 import org.slf4j.Logger;
@@ -14,7 +20,8 @@ public final class AshwakeCore {
     public static final String MOD_NAME = "Ashwake Core";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public AshwakeCore() {
+    public AshwakeCore(IEventBus modEventBus) {
+        modEventBus.addListener(SkillNetworking::onRegisterPayloadHandlers);
         NeoForge.EVENT_BUS.addListener(SpawnStructureHandler::onLevelLoad);
         NeoForge.EVENT_BUS.addListener(SpawnStructureHandler::onPlayerLoggedIn);
         NeoForge.EVENT_BUS.addListener(SpawnStructureProtectionHandler::onBreak);
@@ -25,6 +32,17 @@ public final class AshwakeCore {
         NeoForge.EVENT_BUS.addListener(SpawnStructureProtectionHandler::onExplosionDetonate);
         NeoForge.EVENT_BUS.addListener(SpawnStructureProtectionHandler::onPistonPre);
         NeoForge.EVENT_BUS.addListener(SpawnStructureProtectionHandler::onServerTick);
+        NeoForge.EVENT_BUS.addListener(DevModeState::onPlayerClone);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onPlayerClone);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onPlayerLoggedIn);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onPlayerRespawn);
+        NeoForge.EVENT_BUS.addListener(TreeFellingHandler::onBreak);
+        NeoForge.EVENT_BUS.addListener(TreeFellingHandler::onServerTick);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onBreak);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onItemFished);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onIncomingDamage);
+        NeoForge.EVENT_BUS.addListener(SkillEvents::onDamagePost);
+        NeoForge.EVENT_BUS.addListener(DevModeCommand::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(AshwakeLocateCommand::onRegisterCommands);
         LOGGER.info("{} is loading.", MOD_NAME);
     }

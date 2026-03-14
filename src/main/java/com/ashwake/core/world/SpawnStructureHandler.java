@@ -4,13 +4,16 @@ import com.ashwake.core.AshwakeCore;
 import java.util.Arrays;
 import java.util.Optional;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.Vec3i;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.BiomeTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.Mirror;
@@ -25,8 +28,14 @@ import net.neoforged.neoforge.event.level.LevelEvent;
 
 public final class SpawnStructureHandler {
     private static final String INITIAL_SPAWN_APPLIED_TAG = "ashwake_core.initial_spawn_applied";
-    private static final int PLACEMENT_SEARCH_RADIUS = 96;
-    private static final int PLACEMENT_SEARCH_STEP = 4;
+    private static final int PLACEMENT_SEARCH_RADIUS = 160;
+    private static final int PLACEMENT_SEARCH_STEP = 8;
+    private static final int PLACEMENT_SAMPLE_STEP = 4;
+    private static final int PLACEMENT_EDGE_MARGIN = 10;
+    private static final int FOUNDATION_BLEND_DISTANCE = 6;
+    private static final int LAND_BIOME_SEARCH_RADIUS = 8192;
+    private static final int LAND_BIOME_HORIZONTAL_STEP = 32;
+    private static final int LAND_BIOME_VERTICAL_STEP = 64;
     private static final ResourceLocation SPAWN_TEMPLATE_ID = ResourceLocation.fromNamespaceAndPath(
             AshwakeCore.MOD_ID,
             "spawn"
@@ -102,7 +111,7 @@ public final class SpawnStructureHandler {
         }
 
         BlockPos vanillaSpawn = serverLevel.getSharedSpawnPos();
-        BlockPos placementCenter = findPlacementCenter(serverLevel, vanillaSpawn);
+        BlockPos placementCenter = findPlacementCenter(serverLevel, vanillaSpawn, size);
         int minX = placementCenter.getX() - (size.getX() / 2);
         int minZ = placementCenter.getZ() - (size.getZ() / 2);
         int maxX = minX + size.getX() - 1;
@@ -139,6 +148,7 @@ public final class SpawnStructureHandler {
         }
 
         int foundationMinY = buildFoundation(serverLevel, boundingBox);
+        foundationMinY = Math.min(foundationMinY, blendFoundationEdges(serverLevel, boundingBox));
         BoundingBox protectionBounds = new BoundingBox(
                 boundingBox.minX(),
                 foundationMinY,
@@ -201,14 +211,15 @@ public final class SpawnStructureHandler {
         }
     }
 
-    private static BlockPos findPlacementCenter(ServerLevel serverLevel, BlockPos vanillaSpawn) {
-        BlockPos bestCandidate = vanillaSpawn;
+    private static BlockPos findPlacementCenter(ServerLevel serverLevel, BlockPos vanillaSpawn, Vec3i size) {
+        BlockPos searchAnchor = findLandSearchAnchor(serverLevel, vanillaSpawn);
+        BlockPos bestCandidate = searchAnchor;
         int bestScore = Integer.MAX_VALUE;
 
         for (int dx = -PLACEMENT_SEARCH_RADIUS; dx <= PLACEMENT_SEARCH_RADIUS; dx += PLACEMENT_SEARCH_STEP) {
             for (int dz = -PLACEMENT_SEARCH_RADIUS; dz <= PLACEMENT_SEARCH_RADIUS; dz += PLACEMENT_SEARCH_STEP) {
-                BlockPos candidate = vanillaSpawn.offset(dx, 0, dz);
-                int score = scorePlacementCenter(serverLevel, vanillaSpawn, candidate);
+                BlockPos candidate = searchAnchor.offset(dx, 0, dz);
+                int score = scorePlacementCenter(serverLevel, searchAnchor, candidate, size);
                 if (score < bestScore) {
                     bestScore = score;
                     bestCandidate = candidate;
@@ -219,34 +230,110 @@ public final class SpawnStructureHandler {
         return bestCandidate;
     }
 
-    private static int scorePlacementCenter(ServerLevel serverLevel, BlockPos vanillaSpawn, BlockPos candidate) {
-        int minHeight = Integer.MAX_VALUE;
-        int maxHeight = Integer.MIN_VALUE;
+    private static BlockPos findLandSearchAnchor(ServerLevel serverLevel, BlockPos vanillaSpawn) {
+        if (isLandBiome(serverLevel.getBiome(vanillaSpawn))) {
+            return vanillaSpawn;
+        }
+
+        var closestLandBiome = serverLevel.findClosestBiome3d(
+                SpawnStructureHandler::isLandBiome,
+                vanillaSpawn,
+                LAND_BIOME_SEARCH_RADIUS,
+                LAND_BIOME_HORIZONTAL_STEP,
+                LAND_BIOME_VERTICAL_STEP
+        );
+        if (closestLandBiome == null) {
+            AshwakeCore.LOGGER.warn(
+                    "Could not find a land biome within {} blocks of {}; using vanilla spawn as fallback.",
+                    LAND_BIOME_SEARCH_RADIUS,
+                    vanillaSpawn
+            );
+            return vanillaSpawn;
+        }
+
+        return closestLandBiome.getFirst();
+    }
+
+    private static int scorePlacementCenter(ServerLevel serverLevel, BlockPos searchAnchor, BlockPos candidate, Vec3i size) {
+        int minX = candidate.getX() - (size.getX() / 2);
+        int minZ = candidate.getZ() - (size.getZ() / 2);
+        int maxX = minX + size.getX() - 1;
+        int maxZ = minZ + size.getZ() - 1;
+        int footprintMinHeight = Integer.MAX_VALUE;
+        int footprintMaxHeight = Integer.MIN_VALUE;
         int fluidPenalty = 0;
         int unstablePenalty = 0;
+        int landPenalty = 0;
+        int edgeDropPenalty = 0;
+        int edgeRisePenalty = 0;
 
-        for (int x = candidate.getX() - 2; x <= candidate.getX() + 2; x++) {
-            for (int z = candidate.getZ() - 2; z <= candidate.getZ() + 2; z++) {
+        for (int x = minX; x <= maxX; x += PLACEMENT_SAMPLE_STEP) {
+            for (int z = minZ; z <= maxZ; z += PLACEMENT_SAMPLE_STEP) {
                 int surfaceY = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
                 BlockPos feetPos = new BlockPos(x, surfaceY, z);
                 BlockPos floorPos = feetPos.below();
 
-                minHeight = Math.min(minHeight, surfaceY);
-                maxHeight = Math.max(maxHeight, surfaceY);
+                footprintMinHeight = Math.min(footprintMinHeight, surfaceY);
+                footprintMaxHeight = Math.max(footprintMaxHeight, surfaceY);
 
                 if (!serverLevel.getFluidState(feetPos).isEmpty() || !serverLevel.getFluidState(floorPos).isEmpty()) {
-                    fluidPenalty += 200;
+                    fluidPenalty += 600;
                 }
 
                 if (serverLevel.getBlockState(floorPos).getCollisionShape(serverLevel, floorPos).isEmpty()) {
-                    unstablePenalty += 100;
+                    unstablePenalty += 200;
+                }
+
+                if (!isLandBiome(serverLevel.getBiome(floorPos))) {
+                    landPenalty += 4_000;
                 }
             }
         }
 
-        int distancePenalty = Math.abs(candidate.getX() - vanillaSpawn.getX()) + Math.abs(candidate.getZ() - vanillaSpawn.getZ());
-        int heightPenalty = (maxHeight - minHeight) * 12;
-        return fluidPenalty + unstablePenalty + heightPenalty + distancePenalty;
+        int edgeMinX = minX - PLACEMENT_EDGE_MARGIN;
+        int edgeMaxX = maxX + PLACEMENT_EDGE_MARGIN;
+        int edgeMinZ = minZ - PLACEMENT_EDGE_MARGIN;
+        int edgeMaxZ = maxZ + PLACEMENT_EDGE_MARGIN;
+        for (int x = edgeMinX; x <= edgeMaxX; x += PLACEMENT_SAMPLE_STEP) {
+            for (int z = edgeMinZ; z <= edgeMaxZ; z += PLACEMENT_SAMPLE_STEP) {
+                boolean insideFootprint = x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+                if (insideFootprint) {
+                    continue;
+                }
+
+                int surfaceY = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                BlockPos feetPos = new BlockPos(x, surfaceY, z);
+                BlockPos floorPos = feetPos.below();
+
+                if (!serverLevel.getFluidState(feetPos).isEmpty() || !serverLevel.getFluidState(floorPos).isEmpty()) {
+                    fluidPenalty += 180;
+                }
+
+                if (!isLandBiome(serverLevel.getBiome(floorPos))) {
+                    landPenalty += 1_500;
+                }
+
+                int drop = footprintMinHeight - surfaceY;
+                if (drop > 2) {
+                    edgeDropPenalty += drop * drop * 20;
+                }
+
+                int rise = surfaceY - footprintMaxHeight;
+                if (rise > 4) {
+                    edgeRisePenalty += rise * rise * 8;
+                }
+            }
+        }
+
+        int distancePenalty = Math.abs(candidate.getX() - searchAnchor.getX()) + Math.abs(candidate.getZ() - searchAnchor.getZ());
+        int heightPenalty = (footprintMaxHeight - footprintMinHeight) * 110;
+        return fluidPenalty + unstablePenalty + landPenalty + edgeDropPenalty + edgeRisePenalty + heightPenalty + distancePenalty;
+    }
+
+    private static boolean isLandBiome(Holder<Biome> biome) {
+        return !biome.is(BiomeTags.IS_OCEAN)
+                && !biome.is(BiomeTags.IS_DEEP_OCEAN)
+                && !biome.is(BiomeTags.IS_RIVER);
     }
 
     private static int findPlacementSurface(
@@ -257,15 +344,11 @@ public final class SpawnStructureHandler {
             int maxX,
             int maxZ
     ) {
-        int sampleMinX = Math.max(minX, spawnCenter.getX() - 2);
-        int sampleMaxX = Math.min(maxX, spawnCenter.getX() + 2);
-        int sampleMinZ = Math.max(minZ, spawnCenter.getZ() - 2);
-        int sampleMaxZ = Math.min(maxZ, spawnCenter.getZ() + 2);
-        int[] sampledHeights = new int[(sampleMaxX - sampleMinX + 1) * (sampleMaxZ - sampleMinZ + 1)];
+        int[] sampledHeights = new int[(maxX - minX + 1) * (maxZ - minZ + 1)];
         int index = 0;
 
-        for (int x = sampleMinX; x <= sampleMaxX; x++) {
-            for (int z = sampleMinZ; z <= sampleMaxZ; z++) {
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
                 sampledHeights[index++] = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
             }
         }
@@ -318,6 +401,72 @@ public final class SpawnStructureHandler {
         return foundationMinY;
     }
 
+    private static int blendFoundationEdges(ServerLevel serverLevel, BoundingBox boundingBox) {
+        int blendedMinY = boundingBox.minY();
+
+        for (int x = boundingBox.minX(); x <= boundingBox.maxX(); x++) {
+            blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, x, boundingBox.minZ(), 0, -1));
+            blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, x, boundingBox.maxZ(), 0, 1));
+        }
+
+        for (int z = boundingBox.minZ() + 1; z < boundingBox.maxZ(); z++) {
+            blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.minX(), z, -1, 0));
+            blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.maxX(), z, 1, 0));
+        }
+
+        blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.minX(), boundingBox.minZ(), -1, -1));
+        blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.minX(), boundingBox.maxZ(), -1, 1));
+        blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.maxX(), boundingBox.minZ(), 1, -1));
+        blendedMinY = Math.min(blendedMinY, blendFoundationEdge(serverLevel, boundingBox, boundingBox.maxX(), boundingBox.maxZ(), 1, 1));
+        return blendedMinY;
+    }
+
+    private static int blendFoundationEdge(ServerLevel serverLevel, BoundingBox boundingBox, int x, int z, int stepX, int stepZ) {
+        BlockPos supportPos = findLowestSupportBlock(serverLevel, boundingBox, x, z);
+        if (supportPos == null || serverLevel.getBlockEntity(supportPos) != null) {
+            return boundingBox.minY();
+        }
+
+        BlockState foundationState = getFoundationState(serverLevel, supportPos);
+        if (foundationState.getCollisionShape(serverLevel, supportPos).isEmpty()) {
+            return boundingBox.minY();
+        }
+
+        int blendedMinY = boundingBox.minY();
+        for (int step = 1; step <= FOUNDATION_BLEND_DISTANCE; step++) {
+            int targetX = x + (stepX * step);
+            int targetZ = z + (stepZ * step);
+            int desiredTopY = supportPos.getY() - step;
+            blendedMinY = Math.min(blendedMinY, blendFoundationColumn(serverLevel, foundationState, targetX, targetZ, desiredTopY));
+        }
+
+        return blendedMinY;
+    }
+
+    private static int blendFoundationColumn(ServerLevel serverLevel, BlockState foundationState, int x, int z, int desiredTopY) {
+        int surfaceY = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+        int naturalTopY = surfaceY - 1;
+        if (naturalTopY >= desiredTopY) {
+            return desiredTopY;
+        }
+
+        BlockPos naturalTopPos = new BlockPos(x, naturalTopY, z);
+        BlockState topState = getBlendSurfaceState(serverLevel, naturalTopPos, foundationState);
+        int blendedMinY = desiredTopY;
+
+        for (int y = naturalTopY + 1; y <= desiredTopY; y++) {
+            BlockPos fillPos = new BlockPos(x, y, z);
+            if (!canReplaceForFoundation(serverLevel, fillPos)) {
+                continue;
+            }
+
+            serverLevel.setBlock(fillPos, y == desiredTopY ? topState : foundationState, Block.UPDATE_ALL);
+            blendedMinY = Math.min(blendedMinY, y);
+        }
+
+        return blendedMinY;
+    }
+
     private static BlockState getFoundationState(ServerLevel serverLevel, BlockPos supportPos) {
         BlockState state = serverLevel.getBlockState(supportPos);
         if (state.getBlock() == Blocks.GRASS_BLOCK) {
@@ -325,6 +474,33 @@ public final class SpawnStructureHandler {
         }
 
         return state;
+    }
+
+    private static BlockState getBlendSurfaceState(ServerLevel serverLevel, BlockPos naturalTopPos, BlockState foundationState) {
+        if (naturalTopPos.getY() >= serverLevel.getMinBuildHeight()) {
+            BlockState naturalTopState = serverLevel.getBlockState(naturalTopPos);
+            if (!naturalTopState.getCollisionShape(serverLevel, naturalTopPos).isEmpty()
+                    && serverLevel.getFluidState(naturalTopPos).isEmpty()) {
+                if (naturalTopState.getBlock() == Blocks.GRASS_BLOCK
+                        || naturalTopState.getBlock() == Blocks.PODZOL
+                        || naturalTopState.getBlock() == Blocks.MYCELIUM
+                        || naturalTopState.getBlock() == Blocks.COARSE_DIRT
+                        || naturalTopState.getBlock() == Blocks.DIRT_PATH) {
+                    return naturalTopState;
+                }
+            }
+        }
+
+        if (foundationState.getBlock() == Blocks.DIRT) {
+            return Blocks.GRASS_BLOCK.defaultBlockState();
+        }
+
+        return foundationState;
+    }
+
+    private static boolean canReplaceForFoundation(ServerLevel serverLevel, BlockPos pos) {
+        BlockState state = serverLevel.getBlockState(pos);
+        return state.getCollisionShape(serverLevel, pos).isEmpty() || !serverLevel.getFluidState(pos).isEmpty();
     }
 
     private static BlockPos findLowestSupportBlock(ServerLevel serverLevel, BoundingBox boundingBox, int x, int z) {

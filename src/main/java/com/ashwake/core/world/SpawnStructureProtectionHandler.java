@@ -1,5 +1,6 @@
 package com.ashwake.core.world;
 
+import com.ashwake.core.dev.DevModeState;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -29,6 +30,10 @@ public final class SpawnStructureProtectionHandler {
     }
 
     public static void onBreak(BlockEvent.BreakEvent event) {
+        if (DevModeState.isEnabled(event.getPlayer())) {
+            return;
+        }
+
         if (isProtected(event.getLevel(), event.getPos())) {
             event.setCanceled(true);
             warnPlayer(event.getPlayer());
@@ -36,6 +41,10 @@ public final class SpawnStructureProtectionHandler {
     }
 
     public static void onPlace(BlockEvent.EntityPlaceEvent event) {
+        if (hasDevBypass(event.getEntity())) {
+            return;
+        }
+
         if (isProtected(event.getLevel(), event.getPos())) {
             event.setCanceled(true);
             warnEntity(event.getEntity());
@@ -43,6 +52,10 @@ public final class SpawnStructureProtectionHandler {
     }
 
     public static void onMultiPlace(BlockEvent.EntityMultiPlaceEvent event) {
+        if (hasDevBypass(event.getEntity())) {
+            return;
+        }
+
         for (BlockSnapshot snapshot : event.getReplacedBlockSnapshots()) {
             if (isProtected(snapshot.getLevel(), snapshot.getPos())) {
                 event.setCanceled(true);
@@ -59,6 +72,10 @@ public final class SpawnStructureProtectionHandler {
     }
 
     public static void onToolModification(BlockEvent.BlockToolModificationEvent event) {
+        if (DevModeState.isEnabled(event.getPlayer())) {
+            return;
+        }
+
         if (isProtected(event.getLevel(), event.getPos())) {
             event.setCanceled(true);
             warnPlayer(event.getPlayer());
@@ -150,6 +167,10 @@ public final class SpawnStructureProtectionHandler {
         if (entity instanceof Player player) {
             warnPlayer(player);
         }
+    }
+
+    private static boolean hasDevBypass(Entity entity) {
+        return entity instanceof Player player && DevModeState.isEnabled(player);
     }
 
     private static void warnPlayer(Player player) {
