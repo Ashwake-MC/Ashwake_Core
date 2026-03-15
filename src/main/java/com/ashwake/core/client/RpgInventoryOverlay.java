@@ -18,6 +18,9 @@ public final class RpgInventoryOverlay {
     private static final int OUTER_RIGHT_MARGIN = 42;
     private static final int OUTER_TOP_MARGIN = 16;
     private static final int OUTER_BOTTOM_MARGIN = 16;
+    private static final int EFFECT_PANEL_GAP = 6;
+    private static final int MIN_FULL_EFFECT_WIDTH = 120;
+    private static final int MIN_COMPACT_EFFECT_WIDTH = 32;
     private static final int SLOT_SIZE = 16;
     private static final int SLOT_FRAME_SIZE = 18;
     private static final int SIDE_PANEL_WIDTH = 28;
@@ -39,6 +42,17 @@ public final class RpgInventoryOverlay {
         renderCustomInventory(screen, event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), event.getPartialTick());
     }
 
+    @SubscribeEvent
+    public static void onRenderInventoryMobEffects(ScreenEvent.RenderInventoryMobEffects event) {
+        if (!(event.getScreen() instanceof InventoryScreen screen)) {
+            return;
+        }
+
+        EffectDockingLayout layout = resolveEffectDocking(screen);
+        event.setCompact(layout.compact());
+        event.addHorizontalOffset(layout.effectOffset());
+    }
+
     private static void renderCustomInventory(
             InventoryScreen screen,
             GuiGraphics guiGraphics,
@@ -51,10 +65,11 @@ public final class RpgInventoryOverlay {
         int width = screen.getXSize();
         int height = screen.getYSize();
         float time = getHudTime() + partialTick;
+        EffectDockingLayout layout = resolveEffectDocking(screen);
 
         // Draw backdrop and plaque outside the screen bounds
         drawBackdrop(guiGraphics, screen.width, screen.height, left, top, width, height, time);
-        drawOuterPlaque(guiGraphics, left, top, width, height, time);
+        drawOuterPlaque(guiGraphics, left, top, width, height, layout.outerRightMargin(), time);
 
         try {
             customRenderInProgress = true;
@@ -75,10 +90,12 @@ public final class RpgInventoryOverlay {
         int width = screen.getXSize();
         int height = screen.getYSize();
         float time = getHudTime();
+        EffectDockingLayout layout = resolveEffectDocking(screen);
+        int safeRightEdge = width + layout.outerRightMargin();
 
         // These now draw over the vanilla background because Foreground event is after renderBg
         drawInventoryBody(guiGraphics, 0, 0, width, height, time);
-        drawSideRelicPanel(guiGraphics, 0, 0, time);
+        drawSideRelicPanel(guiGraphics, clampRightElement(176, SIDE_PANEL_WIDTH, safeRightEdge), 8, time);
         drawSectionPanels(guiGraphics, 0, 0, time);
         drawSlotBeds(guiGraphics, screen, 0, 0, time);
         drawCraftArrow(guiGraphics, 0, 0, time);
@@ -134,7 +151,42 @@ public final class RpgInventoryOverlay {
         }
     }
 
-    private static void drawOuterPlaque(GuiGraphics guiGraphics, int left, int top, int width, int height, float time) {
+    public static int getInventoryHudRightEdge(InventoryScreen screen) {
+        return screen.getGuiLeft() + screen.getXSize() + resolveEffectDocking(screen).outerRightMargin();
+    }
+
+    private static EffectDockingLayout resolveEffectDocking(InventoryScreen screen) {
+        int desiredOffset = OUTER_RIGHT_MARGIN + EFFECT_PANEL_GAP - 2;
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.player.getActiveEffects().isEmpty()) {
+            return new EffectDockingLayout(desiredOffset, OUTER_RIGHT_MARGIN, false);
+        }
+
+        int availableSpace = screen.width - (screen.getGuiLeft() + screen.getXSize() + 2);
+        if (availableSpace < MIN_COMPACT_EFFECT_WIDTH) {
+            return new EffectDockingLayout(desiredOffset, OUTER_RIGHT_MARGIN, false);
+        }
+
+        boolean compact = availableSpace - desiredOffset < MIN_FULL_EFFECT_WIDTH;
+        int minRequiredWidth = compact ? MIN_COMPACT_EFFECT_WIDTH : MIN_FULL_EFFECT_WIDTH;
+        int effectOffset = Math.min(desiredOffset, Math.max(0, availableSpace - minRequiredWidth));
+        int outerRightMargin = Math.max(0, effectOffset + 2 - EFFECT_PANEL_GAP);
+        return new EffectDockingLayout(effectOffset, outerRightMargin, compact);
+    }
+
+    private static int clampRightElement(int defaultX, int elementWidth, int safeRightEdge) {
+        return Math.min(defaultX, safeRightEdge - elementWidth);
+    }
+
+    private static void drawOuterPlaque(
+            GuiGraphics guiGraphics,
+            int left,
+            int top,
+            int width,
+            int height,
+            int outerRightMargin,
+            float time
+    ) {
         int barkEdge = color(0xFF1B120D);
         int bark = color(0xFF4D3425);
         int barkDark = color(0xFF251913);
@@ -175,9 +227,7 @@ public final class RpgInventoryOverlay {
         guiGraphics.fill(shimmerX, y + 12, shimmerX + 12, y + 13, withAlpha(color(0xFFF3E7B9), 68));
     }
 
-    private static void drawSideRelicPanel(GuiGraphics guiGraphics, int offsetX, int offsetY, float time) {
-        int x = offsetX + 176;
-        int y = offsetY + 8;
+    private static void drawSideRelicPanel(GuiGraphics guiGraphics, int x, int y, float time) {
         int panelEdge = color(0xFF1E140F);
         int panelTop = color(0xFF3D2A1F);
         int panelBottom = color(0xFF17110D);
@@ -497,5 +547,8 @@ public final class RpgInventoryOverlay {
         return (rgb & 0xFF000000) == 0 && (rgb & 0x00FFFFFF) != 0
                 ? 0xFF000000 | (rgb & 0x00FFFFFF)
                 : rgb;
+    }
+
+    private record EffectDockingLayout(int effectOffset, int outerRightMargin, boolean compact) {
     }
 }

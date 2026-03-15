@@ -30,7 +30,7 @@ public final class SkillStatsScreen extends Screen {
 
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
+        // Draw our own background tint instead of calling renderBackground
         guiGraphics.fillGradient(0, 0, this.width, this.height, 0x22160F0B, 0x55160F0B);
 
         ScreenLayout layout = createLayout();
@@ -121,7 +121,23 @@ public final class SkillStatsScreen extends Screen {
             SkillProgress progress = ClientSkillState.get(hoveredSkill);
             guiGraphics.renderComponentTooltip(this.font, buildTooltip(hoveredSkill, progress), mouseX, mouseY);
         }
+
+        // We manually render widgets instead of calling super.render(guiGraphics, mouseX, mouseY, partialTick)
+        // to avoid triggering some "Blur" mods that hook into the base Screen.render method.
+        for (var renderable : this.renderables) {
+            renderable.render(guiGraphics, mouseX, mouseY, partialTick);
+        }
     }
+
+    @Override
+    public void renderBackground(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+        // Explicitly override to do nothing, preventing some mods from applying blur effects
+    }
+
+    // Compatibility methods for various "Blur" mods to disable their effects on this screen
+    public boolean blur() { return false; }
+    public float getBlurAmount() { return 0.0F; }
+    public int getBlurRadius() { return 0; }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {

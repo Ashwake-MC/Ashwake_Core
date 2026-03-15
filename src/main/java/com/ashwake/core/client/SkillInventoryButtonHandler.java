@@ -54,7 +54,12 @@ public final class SkillInventoryButtonHandler {
     }
 
     private static int getButtonX(AbstractContainerScreen<?> screen) {
-        return screen.getGuiLeft() + BUTTON_OFFSET_X;
+        int defaultX = screen.getGuiLeft() + BUTTON_OFFSET_X;
+        if (screen instanceof InventoryScreen inventoryScreen) {
+            return Math.min(defaultX, RpgInventoryOverlay.getInventoryHudRightEdge(inventoryScreen) - BUTTON_WIDTH);
+        }
+
+        return defaultX;
     }
 
     private static int getButtonY(AbstractContainerScreen<?> screen) {

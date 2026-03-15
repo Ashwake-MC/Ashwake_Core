@@ -1,0 +1,7 @@
+{
+  "key.ashwake_core.open_minimap": "Open Ashwake Map",
+  "key.ashwake_core.minimap_zoom_in": "Minimap Zoom In",
+  "key.ashwake_core.minimap_zoom_out": "Minimap Zoom Out",
+  "screen.ashwake_core.minimap": "Ashwake Map",
+  "screen.ashwake_core.minimap.instructions": "Click and drag to pan the map. Right click to create or edit waypoints. Press M or ESC to close."
+}
