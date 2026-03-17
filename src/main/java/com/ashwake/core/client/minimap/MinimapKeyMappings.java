@@ -13,19 +13,19 @@ public final class MinimapKeyMappings {
     public static final KeyMapping OPEN_MINIMAP = new KeyMapping(
             "key.ashwake_core.open_minimap",
             GLFW.GLFW_KEY_M,
-            "key.categories.misc"
+            "key.categories.ashwake_core"
     );
 
     public static final KeyMapping ZOOM_IN = new KeyMapping(
             "key.ashwake_core.minimap_zoom_in",
             GLFW.GLFW_KEY_EQUAL,
-            "key.categories.misc"
+            "key.categories.ashwake_core"
     );
 
     public static final KeyMapping ZOOM_OUT = new KeyMapping(
             "key.ashwake_core.minimap_zoom_out",
             GLFW.GLFW_KEY_MINUS,
-            "key.categories.misc"
+            "key.categories.ashwake_core"
     );
 
     private MinimapKeyMappings() {

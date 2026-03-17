@@ -15,17 +15,17 @@ public final class MinimapTexture implements AutoCloseable {
         this.width = width;
         this.height = height;
         this.texture = new DynamicTexture(width, height, false);
-        this.texture.setFilter(false, false); // NEAREST filtering for sharpness
+        this.texture.setFilter(true, false); // LINEAR filtering for smooth zoom
         this.location = Minecraft.getInstance().getTextureManager().register(name, this.texture);
     }
 
-    public void setPixels(int[] argbPixels, int dataWidth, int dataHeight) {
+    public void setPixels(int[] argbPixels, int dataWidth, int dataHeight, int stride) {
         NativeImage image = this.texture.getPixels();
         if (image == null) return;
 
         for (int y = 0; y < dataHeight && y < height; y++) {
             for (int x = 0; x < dataWidth && x < width; x++) {
-                int argb = argbPixels[y * dataWidth + x];
+                int argb = argbPixels[y * stride + x];
                 // Convert ARGB to ABGR (which NativeImage expects for RGBA)
                 int r = (argb >> 16) & 0xFF;
                 int b = argb & 0xFF;

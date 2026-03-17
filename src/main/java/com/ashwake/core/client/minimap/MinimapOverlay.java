@@ -51,6 +51,6 @@ public final class MinimapOverlay {
             return;
         }
 
-        MinimapRenderUtil.renderHud(event.getGuiGraphics(), minecraft);
+        MinimapRenderUtil.renderHud(event.getGuiGraphics(), minecraft, event.getPartialTick().getGameTimeDeltaTicks());
     }
 }

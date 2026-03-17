@@ -15,10 +15,10 @@ public class MinimapWorldMap {
     private static final int REGION_MASK = REGION_SIZE - 1;
 
     private final Path cacheDir;
-    private final Map<RegionPos, RegionData> regionCache = new LinkedHashMap<>(32, 0.75f, true) {
+    private final Map<RegionPos, RegionData> regionCache = new LinkedHashMap<>(64, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<RegionPos, RegionData> eldest) {
-            if (size() > 40) {
+            if (size() > 80) {
                 if (eldest.getValue().dirty) {
                     eldest.getValue().save(cacheDir, eldest.getKey());
                 }
@@ -27,6 +27,9 @@ public class MinimapWorldMap {
             return false;
         }
     };
+
+    private RegionPos lastPos;
+    private RegionData lastData;
 
     public MinimapWorldMap(Path cacheDir) {
         this.cacheDir = cacheDir;
@@ -37,11 +40,23 @@ public class MinimapWorldMap {
         }
     }
 
-    public void update(String worldKey, String dimension, int x, int z, int color, short height, boolean underground) {
-        if (worldKey.isBlank() || dimension.isBlank()) return;
+    public synchronized boolean update(String worldKey, String dimension, int x, int z, int color, short height, boolean underground) {
+        if (worldKey == null || worldKey.isBlank() || dimension == null || dimension.isBlank()) return false;
         
-        RegionPos pos = new RegionPos(x >> REGION_SHIFT, z >> REGION_SHIFT, dimension, worldKey);
-        RegionData data = getOrCreateRegion(pos);
+        int rx = x >> REGION_SHIFT;
+        int rz = z >> REGION_SHIFT;
+        
+        RegionData data;
+        if (lastData != null && lastPos != null && lastPos.rx == rx && lastPos.rz == rz && lastPos.dimension.equals(dimension) && lastPos.worldKey.equals(worldKey)) {
+            data = lastData;
+        } else {
+            RegionPos pos = new RegionPos(rx, rz, dimension, worldKey);
+            data = getOrCreateRegion(pos);
+            lastPos = pos;
+            lastData = data;
+        }
+        
+        if (data == null) return false; // Should not happen with getOrCreateRegion
         
         int lx = x & REGION_MASK;
         int lz = z & REGION_MASK;
@@ -52,14 +67,28 @@ public class MinimapWorldMap {
             data.heights[index] = height;
             data.flags[index] = (byte) (underground ? 1 : 0);
             data.dirty = true;
+            return true;
         }
+
+        return false;
     }
 
-    public boolean sample(String worldKey, String dimension, int x, int z, SampleResult result) {
-        if (worldKey.isBlank() || dimension.isBlank()) return false;
+    public synchronized boolean sample(String worldKey, String dimension, int x, int z, SampleResult result) {
+        if (worldKey == null || worldKey.isBlank() || dimension == null || dimension.isBlank()) return false;
         
-        RegionPos pos = new RegionPos(x >> REGION_SHIFT, z >> REGION_SHIFT, dimension, worldKey);
-        RegionData data = getRegion(pos);
+        int rx = x >> REGION_SHIFT;
+        int rz = z >> REGION_SHIFT;
+
+        RegionData data;
+        if (lastPos != null && lastPos.rx == rx && lastPos.rz == rz && lastPos.dimension.equals(dimension) && lastPos.worldKey.equals(worldKey)) {
+            data = lastData;
+        } else {
+            RegionPos pos = new RegionPos(rx, rz, dimension, worldKey);
+            data = getRegion(pos);
+            lastPos = pos;
+            lastData = data;
+        }
+
         if (data == null) return false;
         
         int lx = x & REGION_MASK;
@@ -74,9 +103,10 @@ public class MinimapWorldMap {
         return true;
     }
 
-    private RegionData getRegion(RegionPos pos) {
-        if (regionCache.containsKey(pos)) {
-            return regionCache.get(pos);
+    private synchronized RegionData getRegion(RegionPos pos) {
+        RegionData cached = regionCache.get(pos);
+        if (cached != null) {
+            return cached;
         }
         RegionData data = RegionData.load(cacheDir, pos);
         if (data != null) {
@@ -85,7 +115,7 @@ public class MinimapWorldMap {
         return data;
     }
 
-    private RegionData getOrCreateRegion(RegionPos pos) {
+    private synchronized RegionData getOrCreateRegion(RegionPos pos) {
         RegionData data = getRegion(pos);
         if (data == null) {
             data = new RegionData();
@@ -94,7 +124,7 @@ public class MinimapWorldMap {
         return data;
     }
 
-    public void saveAll() {
+    public synchronized void saveAll() {
         for (Map.Entry<RegionPos, RegionData> entry : regionCache.entrySet()) {
             if (entry.getValue().dirty) {
                 entry.getValue().save(cacheDir, entry.getKey());
@@ -108,11 +138,22 @@ public class MinimapWorldMap {
         public boolean underground;
     }
 
-    private record RegionPos(int rx, int rz, String dimension, String worldKey) {
-        String getFileName() {
-            String safeWorld = worldKey.replaceAll("[^a-zA-Z0-9_-]", "_");
-            String safeDim = dimension.replaceAll("[^a-zA-Z0-9_-]", "_");
-            return "map_" + safeWorld + "_" + safeDim + "_r." + rx + "." + rz + ".dat";
+    private record RegionPos(int rx, int rz, String dimension, String worldKey, String fileName) {
+        RegionPos(int rx, int rz, String dimension, String worldKey) {
+            this(rx, rz, dimension, worldKey, "map_" + worldKey.replaceAll("[^a-zA-Z0-9_-]", "_") + "_" + dimension.replaceAll("[^a-zA-Z0-9_-]", "_") + "_r." + rx + "." + rz + ".dat");
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            RegionPos regionPos = (RegionPos) o;
+            return rx == regionPos.rx && rz == regionPos.rz && Objects.equals(dimension, regionPos.dimension) && Objects.equals(worldKey, regionPos.worldKey);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(rx, rz, dimension, worldKey);
         }
     }
 
@@ -123,13 +164,14 @@ public class MinimapWorldMap {
         boolean dirty = false;
 
         void save(Path dir, RegionPos pos) {
-            Path file = dir.resolve(pos.getFileName());
+            Path file = dir.resolve(pos.fileName());
             try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(Files.newOutputStream(file)))) {
                 out.writeInt(0x4D415053); // 'MAPS'
                 out.writeInt(1); // version
                 for (int c : colors) out.writeInt(c);
                 for (short h : heights) out.writeShort(h);
                 out.write(flags);
+                out.flush();
                 dirty = false;
             } catch (IOException e) {
                 AshwakeCore.LOGGER.error("Failed to save region " + pos, e);
@@ -137,7 +179,7 @@ public class MinimapWorldMap {
         }
 
         static RegionData load(Path dir, RegionPos pos) {
-            Path file = dir.resolve(pos.getFileName());
+            Path file = dir.resolve(pos.fileName());
             if (!Files.exists(file)) return null;
             try (DataInputStream in = new DataInputStream(new GZIPInputStream(Files.newInputStream(file)))) {
                 if (in.readInt() != 0x4D415053) return null;

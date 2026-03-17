@@ -10,10 +10,17 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ambient.AmbientCreature;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.animal.WaterAnimal;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.NeutralMob;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.EntityHitResult;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -34,10 +41,10 @@ public final class RpgHudOverlay {
     private static final int VANILLA_CONTEXT_BAR_TOP_OFFSET = 13;
     private static final int VANILLA_CONTEXT_BAR_HEIGHT = 6;
     private static final int SLOT_TOP_OFFSET = 12;
-    private static final int SIDE_PANEL_WIDTH = 70;
-    private static final int SIDE_PANEL_HEIGHT = 26;
+    private static final int SIDE_PANEL_WIDTH = 64;
+    private static final int SIDE_PANEL_HEIGHT = 22;
     private static final int SIDE_PANEL_GAP = 10;
-    private static final int XP_HEIGHT = 5;
+    private static final int XP_HEIGHT = 4;
     private static final int XP_GAP = 14;
     private static final int TREE_HUD_SAFE_GAP = 34;
     private static final float VALUE_SCALE = 0.72F;
@@ -127,6 +134,55 @@ public final class RpgHudOverlay {
 
         if (gameMode.hasExperience()) {
             drawExperienceBand(guiGraphics, font, player, hotbarX, hotbarY - XP_GAP, hotbarWidth, time);
+        }
+
+        drawTargetHud(guiGraphics, font, minecraft, screenWidth, time);
+    }
+
+    private static void drawTargetHud(GuiGraphics guiGraphics, Font font, Minecraft minecraft, int screenWidth, float time) {
+        if (minecraft.hitResult instanceof EntityHitResult ehr && ehr.getEntity() instanceof LivingEntity entity) {
+            if (entity == minecraft.player || !entity.isAlive() || entity.isInvisible()) {
+                return;
+            }
+
+            if (!(entity instanceof Animal) && !(entity instanceof Enemy) &&
+                    !(entity instanceof WaterAnimal) && !(entity instanceof AmbientCreature) &&
+                    !(entity instanceof NeutralMob)) {
+                return;
+            }
+
+            int width = 160;
+            int height = 24;
+            int x = (screenWidth - width) / 2;
+            int y = 10;
+
+            int barkEdge = color(0xFF1B120C);
+            int bark = color(0xFF513624);
+            int barkDark = color(0xFF2A1B13);
+            int barkPanel = color(0xFF17110D);
+            int gold = color(0xFFD4BF82);
+
+            fillPlaque(guiGraphics, x, y, width, height, barkEdge, bark, barkDark, barkPanel);
+
+            String name = entity.getDisplayName().getString();
+            drawScaledText(guiGraphics, font, name, x + 6, y + 5, gold, 0.9F);
+
+            float health = entity.getHealth();
+            float maxHealth = entity.getMaxHealth();
+            float healthProgress = clamp01(health / maxHealth);
+
+            int barX = x + 6;
+            int barY = y + 15;
+            int barWidth = width - 12;
+            int barHeight = 4;
+
+            int healthStart = color(0xFFC75B4E);
+            int healthEnd = color(0xFF71261F);
+
+            drawMeter(guiGraphics, barX, barY, barWidth, barHeight, healthProgress, healthStart, healthEnd, barkEdge, barkDark, time);
+
+            String hpText = (int) Math.ceil(health) + " / " + (int) Math.ceil(maxHealth);
+            drawScaledText(guiGraphics, font, hpText, x + width - 6 - scaledWidth(font, hpText, 0.7F), y + 6, color(0xFFF1E9D0), 0.7F);
         }
     }
 
@@ -297,7 +353,7 @@ public final class RpgHudOverlay {
                 font,
                 rightX,
                 panelY,
-                showBreath ? "AIR" : "STM",
+                showBreath ? "AIR" : "HUNGER",
                 foodData.getFoodLevel() + "/20",
                 foodProgress,
                 color(0xFFD3A352),
@@ -340,18 +396,20 @@ public final class RpgHudOverlay {
         int textDim = color(0xFFCDBF9D);
         int barFrame = color(0xFF352418);
         int barBg = color(0xFF0E0B09);
+        int valueX = x + SIDE_PANEL_WIDTH - 8 - scaledWidth(font, value, VALUE_SCALE);
+        float labelScale = fittedScale(font, label, Math.max(18, valueX - (x + 8) - 4), 0.72F, 1.0F);
 
         guiGraphics.fill(x + 4, y + 3, x + SIDE_PANEL_WIDTH + 4, y + SIDE_PANEL_HEIGHT + 4, shadow);
         fillPlaque(guiGraphics, x, y, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, barkEdge, bark, barkDark, panel);
         drawOutline(guiGraphics, x + 6, y + 3, SIDE_PANEL_WIDTH - 12, SIDE_PANEL_HEIGHT - 6, gold);
 
-        guiGraphics.drawString(font, label, x + 8, y + 5, text, false);
-        drawScaledText(guiGraphics, font, value, x + SIDE_PANEL_WIDTH - 8 - scaledWidth(font, value, VALUE_SCALE), y + 6, textDim, VALUE_SCALE);
+        drawScaledText(guiGraphics, font, label, x + 8, y + 4, text, labelScale);
+        drawScaledText(guiGraphics, font, value, valueX, y + 5, textDim, VALUE_SCALE);
 
         int barX = x + 8;
-        int barY = y + 14;
+        int barY = y + 12;
         int barWidth = SIDE_PANEL_WIDTH - 16;
-        drawMeter(guiGraphics, barX, barY, barWidth, 5, progress, fillStart, fillEnd, barFrame, barBg, time);
+        drawMeter(guiGraphics, barX, barY, barWidth, 4, progress, fillStart, fillEnd, barFrame, barBg, time);
 
         if (absorptionProgress > 0.0F) {
             int absWidth = Math.max(0, Math.round((barWidth - 2) * absorptionProgress));
@@ -542,6 +600,16 @@ public final class RpgHudOverlay {
 
     private static int scaledWidth(Font font, String text, float scale) {
         return Math.round(font.width(text) * scale);
+    }
+
+    private static float fittedScale(Font font, String text, int maxWidth, float minScale, float maxScale) {
+        if (text.isEmpty()) {
+            return maxScale;
+        }
+
+        int naturalWidth = Math.max(1, font.width(text));
+        float fittedScale = Math.min(maxScale, maxWidth / (float) naturalWidth);
+        return Math.max(minScale, fittedScale);
     }
 
     private static void drawScaledText(GuiGraphics guiGraphics, Font font, String text, int x, int y, int color, float scale) {

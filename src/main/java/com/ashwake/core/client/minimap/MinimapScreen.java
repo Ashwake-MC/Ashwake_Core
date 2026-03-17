@@ -7,12 +7,14 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.LivingEntity;
 
 import java.util.List;
 
 public final class MinimapScreen extends Screen {
     private double mapCenterX;
     private double mapCenterZ;
+    private double currentZoomIndex = -1;
     private boolean isDragging;
     private double lastMouseX;
     private double lastMouseY;
@@ -72,7 +74,20 @@ public final class MinimapScreen extends Screen {
         // Draw our own background tint instead of calling renderBackground
         guiGraphics.fillGradient(0, 0, this.width, this.height, 0xB0120D0A, 0xD0060404);
 
-        MinimapRenderUtil.MapView view = MinimapRenderUtil.createFullscreenView(this.width, this.height);
+        if (this.currentZoomIndex == -1) {
+            this.currentZoomIndex = MinimapClientState.getZoomIndex();
+        }
+
+        // Simple smooth transition for zoom
+        int targetZoomIndex = MinimapClientState.getZoomIndex();
+        if (Math.abs(this.currentZoomIndex - targetZoomIndex) > 0.001) {
+            this.currentZoomIndex += (targetZoomIndex - this.currentZoomIndex) * 0.2;
+        } else {
+            this.currentZoomIndex = targetZoomIndex;
+        }
+
+        float actualZoom = MinimapClientState.getZoom(this.currentZoomIndex);
+        MinimapRenderUtil.MapView view = MinimapRenderUtil.createFullscreenView(this.width, this.height, actualZoom);
         
         // Fullscreen map panel background
         MinimapRenderUtil.drawPanel(
@@ -83,15 +98,22 @@ public final class MinimapScreen extends Screen {
                 view.size() + 108
         );
         
-        MinimapRenderUtil.renderMap(guiGraphics, Minecraft.getInstance(), view, this.mapCenterX, this.mapCenterZ, true, false);
+        MinimapRenderUtil.renderMap(guiGraphics, Minecraft.getInstance(), view, this.mapCenterX, this.mapCenterZ, true, false, partialTick);
 
-        guiGraphics.drawCenteredString(this.font, this.title, this.width / 2, view.y() - 16, 0xFFF0E6CC);
+        guiGraphics.drawCenteredString(this.font, this.title, view.x() + view.size() / 2, view.y() - 16, 0xFFF0E6CC);
         
         if (!this.showWaypointMenu) {
             MinimapRenderUtil.renderFullscreenFooter(guiGraphics, Minecraft.getInstance(), view);
         }
 
-        this.renderWaypointList(guiGraphics, mouseX, mouseY);
+        this.renderWaypointList(guiGraphics, mouseX, mouseY, view);
+        
+        if (!this.showWaypointMenu) {
+            LivingEntity hovered = MinimapRenderUtil.getHoveredEntity(Minecraft.getInstance(), view, this.mapCenterX, this.mapCenterZ, mouseX, mouseY, false);
+            if (hovered != null) {
+                guiGraphics.renderTooltip(this.font, hovered.getName(), mouseX, mouseY);
+            }
+        }
 
         if (this.showWaypointMenu) {
             // Dim background when menu is open
@@ -163,10 +185,9 @@ public final class MinimapScreen extends Screen {
         this.cancelButton.visible = true;
     }
 
-    private void renderWaypointList(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+    private void renderWaypointList(GuiGraphics guiGraphics, int mouseX, int mouseY, MinimapRenderUtil.MapView view) {
         if (this.minecraft == null) return;
         
-        MinimapRenderUtil.MapView view = MinimapRenderUtil.createFullscreenView(this.width, this.height);
         int listWidth = 140;
         int listX = view.x() + view.size() + 20;
         int listY = view.y() - 22;
@@ -328,8 +349,9 @@ public final class MinimapScreen extends Screen {
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
         if (this.isDragging && !this.showWaypointMenu) {
-            MinimapRenderUtil.MapView view = MinimapRenderUtil.createFullscreenView(this.width, this.height);
-            double blocksPerPixel = (double) view.blocksPerCell() / view.cellSize();
+            float actualZoom = MinimapClientState.getZoom(this.currentZoomIndex);
+            MinimapRenderUtil.MapView view = MinimapRenderUtil.createFullscreenView(this.width, this.height, actualZoom);
+            double blocksPerPixel = 1.0D / actualZoom;
             
             this.mapCenterX -= dragX * blocksPerPixel;
             this.mapCenterZ -= dragY * blocksPerPixel;
@@ -425,6 +447,9 @@ public final class MinimapScreen extends Screen {
 
     @Override
     public void onClose() {
+        if (MinimapClientState.getWorldMap() != null) {
+            MinimapClientState.getWorldMap().saveAll();
+        }
         if (this.minecraft != null) {
             this.minecraft.setScreen(null);
         }

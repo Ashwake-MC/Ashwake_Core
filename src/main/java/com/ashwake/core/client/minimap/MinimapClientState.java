@@ -10,17 +10,26 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 public final class MinimapClientState {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final int SAVE_INTERVAL_TICKS = 100;
+    private static final int SCAN_RADIUS_CHUNKS = 6;
+    private static final int SCAN_REFRESH_INTERVAL_TICKS = 40;
+    private static final int SCAN_REFRESH_RADIUS_CHUNKS = 1;
+    private static final int SCAN_CHUNK_BUDGET_PER_TICK = 12;
     private static final int[] WAYPOINT_COLORS = new int[]{
             0xFFE0C78D,
             0xFF8EB57A,
@@ -34,43 +43,59 @@ public final class MinimapClientState {
     private static String currentWorldKey = "";
     private static MinimapWorldMap worldMap;
     private static int nextWaypointNumber = 1;
-    private static int zoomIndex = 2; // Default 1.0x
-    private static final float[] ZOOM_LEVELS = {0.25F, 0.5F, 1.0F, 2.0F, 4.0F};
+    private static int zoomIndex = 7; // Default 1.0x
+    private static final float[] ZOOM_LEVELS = {0.0078125F, 0.015625F, 0.03125F, 0.0625F, 0.125F, 0.25F, 0.5F, 1.0F, 2.0F, 4.0F};
 
     private static MinimapTexture mapTexture;
     private static int saveCounter = 0;
-    private static int scanCounter = 0;
+    private static int scanRefreshCounter = 0;
+    private static int lastScannedChunkX = Integer.MIN_VALUE;
+    private static int lastScannedChunkZ = Integer.MIN_VALUE;
+    private static long mapDataVersion = 0L;
+    private static final ArrayDeque<Long> pendingChunkScans = new ArrayDeque<>();
+    private static final Set<Long> queuedChunkScans = new HashSet<>();
 
     private MinimapClientState() {
     }
 
     public static MinimapTexture getMapTexture() {
         if (mapTexture == null) {
-            mapTexture = new MinimapTexture("ashwake_core_minimap", 512, 512);
+            mapTexture = new MinimapTexture("ashwake_core_minimap", 1024, 1024);
         }
         return mapTexture;
     }
 
+    public static long getMapDataVersion() {
+        return mapDataVersion;
+    }
+
     public static void tick(Minecraft minecraft) {
         syncContext(minecraft);
-        if (worldMap != null && ++saveCounter >= 1200) { // Save every 60 seconds
+        if (worldMap != null && ++saveCounter >= SAVE_INTERVAL_TICKS) {
+            AshwakeCore.LOGGER.info("Periodic minimap save for world: {}", currentWorldKey);
             worldMap.saveAll();
             saveCounter = 0;
         }
 
-        // Periodic chunk scanning (every 0.5 seconds)
-        if (minecraft != null && minecraft.player != null && minecraft.level != null && worldMap != null && ++scanCounter >= 10) {
-            int px = (int) minecraft.player.getX() >> 4;
-            int pz = (int) minecraft.player.getZ() >> 4;
-            
-            // Scan 7x7 area around player (enough for even fast elytra flight)
-            for (int dx = -3; dx <= 3; dx++) {
-                for (int dz = -3; dz <= 3; dz++) {
-                    MinimapRenderUtil.scanChunk(minecraft, minecraft.level, px + dx, pz + dz);
-                }
-            }
-            scanCounter = 0;
+        if (minecraft == null || minecraft.player == null || minecraft.level == null || worldMap == null) {
+            return;
         }
+
+        int currentChunkX = (int) minecraft.player.getX() >> 4;
+        int currentChunkZ = (int) minecraft.player.getZ() >> 4;
+        boolean movedChunks = currentChunkX != lastScannedChunkX || currentChunkZ != lastScannedChunkZ;
+
+        if (movedChunks) {
+            enqueueScanWindow(currentChunkX, currentChunkZ, lastScannedChunkX, lastScannedChunkZ);
+            lastScannedChunkX = currentChunkX;
+            lastScannedChunkZ = currentChunkZ;
+            scanRefreshCounter = 0;
+        } else if (++scanRefreshCounter >= SCAN_REFRESH_INTERVAL_TICKS) {
+            enqueueRefreshArea(currentChunkX, currentChunkZ);
+            scanRefreshCounter = 0;
+        }
+
+        processQueuedScans(minecraft);
     }
 
     public static MinimapWorldMap getWorldMap() {
@@ -102,6 +127,19 @@ public final class MinimapClientState {
         if (zoomIndex > 0) {
             zoomIndex--;
         }
+    }
+
+    public static int getZoomIndex() {
+        return zoomIndex;
+    }
+
+    public static float getZoom(double index) {
+        int i = (int) index;
+        if (i < 0) return ZOOM_LEVELS[0];
+        if (i >= ZOOM_LEVELS.length - 1) return ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+        
+        float f = (float) (index - i);
+        return Mth.lerp(f, ZOOM_LEVELS[i], ZOOM_LEVELS[i + 1]);
     }
 
     public static int getBlocksPerCell() {
@@ -216,33 +254,64 @@ public final class MinimapClientState {
 
     private static void syncContext(Minecraft minecraft) {
         String worldKey = resolveWorldKey(minecraft);
-        if (Objects.equals(worldKey, currentWorldKey)) {
+        if (worldKey == null) {
+            if (!currentWorldKey.isEmpty()) {
+                AshwakeCore.LOGGER.info("Leaving minimap context: {}", currentWorldKey);
+                if (worldMap != null) worldMap.saveAll();
+                currentWorldKey = "";
+                worldMap = null;
+                WAYPOINTS.clear();
+                nextWaypointNumber = 1;
+                MinimapRenderUtil.clearCaches();
+            }
+            return;
+        }
+
+        if (worldKey.equals(currentWorldKey)) {
             return;
         }
 
         if (worldMap != null) {
+            AshwakeCore.LOGGER.info("Saving minimap for world: {}", currentWorldKey);
             worldMap.saveAll();
         }
 
-        currentWorldKey = worldKey == null ? "" : worldKey;
+        currentWorldKey = worldKey;
         WAYPOINTS.clear();
         nextWaypointNumber = 1;
 
-        if (worldKey != null) {
-            loadContext(minecraft, worldKey);
-            worldMap = new MinimapWorldMap(minecraft.gameDirectory.toPath().resolve("config").resolve("ashwake_core_minimap_cache"));
-        } else {
-            worldMap = null;
-        }
+        AshwakeCore.LOGGER.info("Loading minimap for world: {}", currentWorldKey);
+        loadContext(minecraft, worldKey);
+        MinimapRenderUtil.clearCaches();
+        worldMap = new MinimapWorldMap(minecraft.gameDirectory.toPath().resolve("config").resolve("ashwake_core_minimap_cache"));
+        saveCounter = 0;
+        scanRefreshCounter = SCAN_REFRESH_INTERVAL_TICKS;
+        lastScannedChunkX = Integer.MIN_VALUE;
+        lastScannedChunkZ = Integer.MIN_VALUE;
+        mapDataVersion = 0L;
+        clearScanQueue();
     }
 
     private static String resolveWorldKey(Minecraft minecraft) {
-        if (minecraft == null || minecraft.level == null) {
+        if (minecraft == null || minecraft.level == null || minecraft.player == null) {
             return null;
         }
 
         if (minecraft.hasSingleplayerServer() && minecraft.getSingleplayerServer() != null) {
-            return "singleplayer:" + minecraft.getSingleplayerServer().getWorldData().getLevelName();
+            var server = minecraft.getSingleplayerServer();
+            String levelName = server.getWorldData().getLevelName();
+            if (levelName == null || levelName.isBlank()) levelName = "unnamed_world";
+            
+            String uniqueId = "";
+            try {
+                // Fallback to seed for uniqueness if folder name is not accessible.
+                // In 1.20.1 it's in worldGenOptions.
+                uniqueId = Long.toHexString(server.getWorldData().worldGenOptions().seed());
+            } catch (Throwable t) {
+                uniqueId = "unknown";
+            }
+            
+            return "singleplayer:" + levelName + ":" + uniqueId;
         }
 
         ServerData serverData = minecraft.getCurrentServer();
@@ -326,5 +395,108 @@ public final class MinimapClientState {
 
     private static Path storagePath(Minecraft minecraft) {
         return minecraft.gameDirectory.toPath().resolve("config").resolve("ashwake_core_minimap_waypoints.json");
+    }
+
+    private static void enqueueScanWindow(int chunkX, int chunkZ, int previousChunkX, int previousChunkZ) {
+        if (previousChunkX == Integer.MIN_VALUE || previousChunkZ == Integer.MIN_VALUE) {
+            enqueueFullScan(chunkX, chunkZ);
+            return;
+        }
+
+        int deltaX = chunkX - previousChunkX;
+        int deltaZ = chunkZ - previousChunkZ;
+        if (Math.abs(deltaX) > 1 || Math.abs(deltaZ) > 1) {
+            clearScanQueue();
+            enqueueFullScan(chunkX, chunkZ);
+            return;
+        }
+
+        enqueueChunk(chunkX, chunkZ, true);
+
+        if (deltaX != 0) {
+            int edgeChunkX = chunkX + (Integer.signum(deltaX) * SCAN_RADIUS_CHUNKS);
+            for (int dz = -SCAN_RADIUS_CHUNKS; dz <= SCAN_RADIUS_CHUNKS; dz++) {
+                enqueueChunk(edgeChunkX, chunkZ + dz, false);
+            }
+        }
+
+        if (deltaZ != 0) {
+            int edgeChunkZ = chunkZ + (Integer.signum(deltaZ) * SCAN_RADIUS_CHUNKS);
+            for (int dx = -SCAN_RADIUS_CHUNKS; dx <= SCAN_RADIUS_CHUNKS; dx++) {
+                enqueueChunk(chunkX + dx, edgeChunkZ, false);
+            }
+        }
+    }
+
+    private static void enqueueFullScan(int chunkX, int chunkZ) {
+        for (int radius = 0; radius <= SCAN_RADIUS_CHUNKS; radius++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                enqueueChunk(chunkX - radius, chunkZ + dz, radius <= 1);
+                enqueueChunk(chunkX + radius, chunkZ + dz, radius <= 1);
+            }
+            for (int dx = -radius + 1; dx <= radius - 1; dx++) {
+                enqueueChunk(chunkX + dx, chunkZ - radius, radius <= 1);
+                enqueueChunk(chunkX + dx, chunkZ + radius, radius <= 1);
+            }
+        }
+    }
+
+    private static void enqueueRefreshArea(int chunkX, int chunkZ) {
+        for (int dz = -SCAN_REFRESH_RADIUS_CHUNKS; dz <= SCAN_REFRESH_RADIUS_CHUNKS; dz++) {
+            for (int dx = -SCAN_REFRESH_RADIUS_CHUNKS; dx <= SCAN_REFRESH_RADIUS_CHUNKS; dx++) {
+                enqueueChunk(chunkX + dx, chunkZ + dz, true);
+            }
+        }
+    }
+
+    private static void processQueuedScans(Minecraft minecraft) {
+        boolean changed = false;
+        int processed = 0;
+
+        while (processed < SCAN_CHUNK_BUDGET_PER_TICK && !pendingChunkScans.isEmpty()) {
+            long packedChunk = pendingChunkScans.removeFirst();
+            queuedChunkScans.remove(packedChunk);
+
+            int chunkX = unpackChunkX(packedChunk);
+            int chunkZ = unpackChunkZ(packedChunk);
+            if (MinimapRenderUtil.scanChunk(minecraft, minecraft.level, chunkX, chunkZ)) {
+                changed = true;
+            }
+            processed++;
+        }
+
+        if (changed) {
+            mapDataVersion++;
+        }
+    }
+
+    private static void clearScanQueue() {
+        pendingChunkScans.clear();
+        queuedChunkScans.clear();
+    }
+
+    private static void enqueueChunk(int chunkX, int chunkZ, boolean priority) {
+        long packedChunk = packChunkPos(chunkX, chunkZ);
+        if (!queuedChunkScans.add(packedChunk)) {
+            return;
+        }
+
+        if (priority) {
+            pendingChunkScans.addFirst(packedChunk);
+        } else {
+            pendingChunkScans.addLast(packedChunk);
+        }
+    }
+
+    private static long packChunkPos(int chunkX, int chunkZ) {
+        return (((long) chunkX) << 32) | (chunkZ & 0xFFFFFFFFL);
+    }
+
+    private static int unpackChunkX(long packedChunk) {
+        return (int) (packedChunk >> 32);
+    }
+
+    private static int unpackChunkZ(long packedChunk) {
+        return (int) packedChunk;
     }
 }
